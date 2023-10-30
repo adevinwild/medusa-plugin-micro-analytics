@@ -6,14 +6,21 @@ import {
   OrderStatus,
   PaymentStatus,
 } from "@medusajs/medusa/dist/models/order";
-import { BaseService } from "medusa-interfaces";
 import {
-  EntityManager,
-  FindOneOptions,
-  FindOptionsWhere,
-  Repository,
-} from "typeorm";
-import { BetweenDate, MoreThanOrEqualDate } from "../utils/date";
+  endOfMonth,
+  endOfWeek,
+  endOfYear,
+  format,
+  startOfMonth,
+  startOfWeek,
+  startOfYear,
+  subDays,
+  subMonths,
+  subWeeks,
+  subYears,
+} from "date-fns";
+import { BaseService } from "medusa-interfaces";
+import { Between, EntityManager, FindOperator, Not, Repository } from "typeorm";
 
 type Container = {
   manager: EntityManager;
@@ -22,14 +29,15 @@ type Container = {
   customerRepository: Repository<Customer>;
 };
 
-type MostSoldProduct = {
+export type MostSoldProduct = {
   id: string;
   variant_id: string;
   title: string;
+  thumbnail: string;
   quantity: number;
 };
 
-type DashboardStatsResponse = {
+export type DashboardStatsResponse = {
   orders: {
     total: number;
     completed: number;
@@ -44,7 +52,14 @@ type DashboardStatsResponse = {
     total: number;
   };
   revenue: {
-    total: number;
+    current: {
+      total: number;
+      date: string;
+    };
+    previous: {
+      total: number;
+      date: string;
+    };
   };
 };
 
@@ -63,52 +78,99 @@ class MicroAnalyticsService extends BaseService {
     super();
   }
 
-  _getPeriodQuery(period: Period): FindOneOptions["where"] {
-    const now = new Date();
+  _getPeriodQuery(
+    period: Period,
+    date?: Date
+  ): {
+    created_at: FindOperator<Date>;
+  } {
+    const now = date ?? new Date();
 
     switch (period) {
       case "day": {
-        const today = new Date(
-          now.getFullYear(),
-          now.getMonth(),
-          now.getDate()
-        );
-
         return {
-          created_at: MoreThanOrEqualDate(today),
+          created_at: Between(
+            now,
+            new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+          ),
         };
       }
       case "week": {
-        const oneWeek = 7;
-        const oneWeekAgo = new Date(
-          now.getFullYear(),
-          now.getMonth(),
-          now.getDate() - oneWeek
-        );
-
         return {
-          created_at: MoreThanOrEqualDate(oneWeekAgo),
+          created_at: Between(startOfWeek(now), endOfWeek(now)),
         };
       }
       case "month": {
-        const firstDayMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const lastDayMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
         return {
-          created_at: BetweenDate(firstDayMonth, lastDayMonth),
+          created_at: Between(startOfMonth(now), endOfMonth(now)),
         };
       }
       case "year": {
-        const firstDayYear = new Date(now.getFullYear(), 0, 1);
-        const lastDayYear = new Date(now.getFullYear(), 11, 31);
-
         return {
-          created_at: BetweenDate(firstDayYear, lastDayYear),
+          created_at: Between(startOfYear(now), endOfYear(now)),
         };
       }
       case "all":
       default:
-        return {};
+        return {
+          created_at: Not(null),
+        };
+    }
+  }
+
+  private _getOrdersTotal(orders: Order[]) {
+    return orders.reduce((acc, curr) => {
+      const { payments } = curr;
+
+      const orderTotal = payments.reduce((acc, curr) => {
+        return acc + curr.amount;
+      }, 0);
+
+      return acc + orderTotal;
+    }, 0);
+  }
+
+  private _getPreviousPeriodQuery(period: Period) {
+    const now = new Date();
+
+    switch (period) {
+      case "day": {
+        return {
+          created_at: Between(
+            subDays(now, 1),
+            new Date(now.getFullYear(), now.getMonth(), now.getDate())
+          ),
+        };
+      }
+      case "week": {
+        return {
+          created_at: Between(
+            subWeeks(startOfWeek(now), 1),
+            subWeeks(endOfWeek(now), 1)
+          ),
+        };
+      }
+      case "month": {
+        return {
+          created_at: Between(
+            subMonths(startOfMonth(now), 1),
+            subMonths(endOfMonth(now), 1)
+          ),
+        };
+      }
+      case "year": {
+        return {
+          created_at: Between(
+            subYears(startOfYear(now), 1),
+            subYears(endOfYear(now), 1)
+          ),
+        };
+      }
+      case "all":
+      default:
+        return {
+          created_at: Not(null),
+        };
     }
   }
 
@@ -125,11 +187,12 @@ class MicroAnalyticsService extends BaseService {
 
     const completed = await orderRepository.count({
       where: [
-        period as FindOptionsWhere<Order>,
         {
+          created_at: period.created_at,
           status: OrderStatus.COMPLETED,
         },
         {
+          created_at: period.created_at,
           payment_status: PaymentStatus.CAPTURED,
           fulfillment_status: FulfillmentStatus.SHIPPED,
         },
@@ -138,14 +201,14 @@ class MicroAnalyticsService extends BaseService {
 
     const pending = await orderRepository.count({
       where: {
-        ...period,
+        created_at: period.created_at,
         status: OrderStatus.PENDING,
       },
     });
 
     const canceled = await orderRepository.count({
       where: {
-        ...period,
+        created_at: period.created_at,
         status: OrderStatus.CANCELED,
       },
     });
@@ -165,25 +228,26 @@ class MicroAnalyticsService extends BaseService {
 
     const lineItems = await this.container.lineItemRepository.find({
       where: [
-        period as FindOptionsWhere<LineItem>,
         {
+          created_at: period.created_at,
           order: {
             status: OrderStatus.COMPLETED,
           },
         },
         {
+          created_at: period.created_at,
           order: {
             status: OrderStatus.PENDING,
           },
         },
         {
+          created_at: period.created_at,
           order: {
             payment_status: PaymentStatus.CAPTURED,
             fulfillment_status: FulfillmentStatus.SHIPPED,
           },
         },
       ],
-
       relations: ["variant", "variant.product"],
     });
 
@@ -205,6 +269,7 @@ class MicroAnalyticsService extends BaseService {
           id: product.id,
           variant_id: variant.id,
           title: product.title,
+          thumbnail: product.thumbnail,
           quantity: 0,
         };
       }
@@ -231,9 +296,11 @@ class MicroAnalyticsService extends BaseService {
   async getCustomersStats(
     options: FindStatsOptions
   ): Promise<DashboardStatsResponse["customers"]> {
+    const period = this._getPeriodQuery(options.period);
+
     const total = await this.container.customerRepository.count({
       where: {
-        ...this._getPeriodQuery(options.period),
+        created_at: period.created_at,
       },
     });
 
@@ -242,24 +309,83 @@ class MicroAnalyticsService extends BaseService {
     };
   }
 
-  async getRevenueStats() {
-    const { total } = await this.container.orderRepository
-      .createQueryBuilder("order")
-      .leftJoinAndSelect("order.payments", "payment")
-      .where("order.status = :status", { status: OrderStatus.COMPLETED })
-      .select("SUM(payment.amount)", "total")
-      .getRawOne();
+  async getRevenueStats(
+    options: FindStatsOptions
+  ): Promise<DashboardStatsResponse["revenue"]> {
+    const period = this._getPeriodQuery(options.period);
+    const previousPeriod = this._getPreviousPeriodQuery(options.period);
+
+    const currentOrders = await this.container.orderRepository.find({
+      where: [
+        {
+          created_at: period.created_at,
+          status: OrderStatus.COMPLETED,
+        },
+        {
+          created_at: period.created_at,
+          payment_status: PaymentStatus.CAPTURED,
+          fulfillment_status: FulfillmentStatus.SHIPPED,
+        },
+      ],
+      select: ["id", "payments"],
+      relations: ["payments"],
+    });
+
+    const previousOrders = await this.container.orderRepository.find({
+      where: [
+        {
+          created_at: previousPeriod.created_at,
+          status: OrderStatus.COMPLETED,
+        },
+        {
+          created_at: previousPeriod.created_at,
+          payment_status: PaymentStatus.CAPTURED,
+          fulfillment_status: FulfillmentStatus.SHIPPED,
+        },
+      ],
+      select: ["id", "payments"],
+      relations: ["payments"],
+    });
+
+    const currentTotal = this._getOrdersTotal(currentOrders);
+    const previousTotal = this._getOrdersTotal(previousOrders);
+
+    const currentDate = period.created_at.multipleParameters
+      ? options.period === "day"
+        ? (period.created_at.value[0] as Date)
+        : (period.created_at.value[1] as Date)
+      : (period.created_at.value as Date);
+
+    const previousDate = previousPeriod.created_at.multipleParameters
+      ? options.period === "day"
+        ? (previousPeriod.created_at.value[0] as Date)
+        : (previousPeriod.created_at.value[1] as Date)
+      : (previousPeriod.created_at.value as Date);
 
     return {
-      total: +total || 0,
+      current: {
+        total: currentTotal,
+        date: format(currentDate, "yyyy-MM-dd"),
+      },
+      previous: {
+        total: previousTotal,
+        date: format(previousDate, "yyyy-MM-dd"),
+      },
     };
   }
 
   async getDashboardStats(options: FindStatsOptions) {
-    const orders = await this.getOrdersStats(options || defaultOptions);
-    const products = await this.getProductsStats(options || defaultOptions);
-    const customers = await this.getCustomersStats(options || defaultOptions);
-    const revenue = await this.getRevenueStats();
+    const _orders = this.getOrdersStats(options || defaultOptions);
+    const _products = this.getProductsStats(options || defaultOptions);
+    const _customers = this.getCustomersStats(options || defaultOptions);
+    const _revenue = this.getRevenueStats(options || defaultOptions);
+
+    const [orders, products, customers, revenue] = await Promise.all([
+      _orders,
+      _products,
+      _customers,
+      _revenue,
+    ]);
 
     return {
       orders,

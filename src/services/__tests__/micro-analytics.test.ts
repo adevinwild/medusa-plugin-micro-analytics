@@ -1,7 +1,14 @@
 import { LineItem, Order } from "@medusajs/medusa";
-import { FindOperator, FindOptionsWhere } from "typeorm";
+import { Between, FindOperator, FindOptionsWhere, Not } from "typeorm";
+import {
+  startOfWeek,
+  endOfWeek,
+  startOfMonth,
+  endOfMonth,
+  startOfYear,
+  endOfYear,
+} from "date-fns";
 
-import { BetweenDate, MoreThanOrEqualDate } from "../../utils/date";
 import { MockManager, MockRepository } from "../../utils/tests";
 import lineItemFixture from "../__fixtures__/line-item-winter-jacket.json";
 import MicroAnalyticsService from "../micro-analytics";
@@ -25,12 +32,12 @@ describe("MicroAnalyticsService", () => {
         return Promise.resolve([]);
       }
 
-      if (q.where[0].created_at) {
-        return Promise.resolve([]);
+      // If the query is for "all" the time, return the fixture
+      if (q.where.every((query) => query.created_at.type === "not")) {
+        return Promise.resolve([lineItemFixture]);
       }
 
-      // When "all"
-      return Promise.resolve([lineItemFixture]);
+      return Promise.resolve([]);
     },
   });
 
@@ -45,15 +52,17 @@ describe("MicroAnalyticsService", () => {
 
   describe("_getPeriodQuery", () => {
     it("should return a query for the current day", () => {
-      const query = microAnalyticsService._getPeriodQuery(
-        "day"
-      ) as FindOptionsWhere<Order>;
+      const query = microAnalyticsService._getPeriodQuery("day", new Date(0));
 
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const now = new Date(0);
 
       expect(query).toHaveProperty("created_at");
-      expect(query.created_at).toStrictEqual(MoreThanOrEqualDate(today));
+      expect(query.created_at).toStrictEqual(
+        Between(
+          now,
+          new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+        )
+      );
     });
 
     it("should return a query for the current week", () => {
@@ -62,15 +71,11 @@ describe("MicroAnalyticsService", () => {
       ) as FindOptionsWhere<Order>;
 
       const now = new Date();
-      const oneWeek = 7;
-      const oneWeekAgo = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() - oneWeek
-      );
 
       expect(query).toHaveProperty("created_at");
-      expect(query.created_at).toStrictEqual(MoreThanOrEqualDate(oneWeekAgo));
+      expect(query.created_at).toStrictEqual(
+        Between(startOfWeek(now), endOfWeek(now))
+      );
     });
 
     it("should return a query for the current month", () => {
@@ -79,12 +84,10 @@ describe("MicroAnalyticsService", () => {
       ) as FindOptionsWhere<Order>;
 
       const now = new Date();
-      const firstDayMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDayMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
       expect(query).toHaveProperty("created_at");
       expect(query.created_at).toStrictEqual(
-        BetweenDate(firstDayMonth, lastDayMonth)
+        Between(startOfMonth(now), endOfMonth(now))
       );
     });
 
@@ -94,19 +97,19 @@ describe("MicroAnalyticsService", () => {
       ) as FindOptionsWhere<Order>;
 
       const now = new Date();
-      const firstDayYear = new Date(now.getFullYear(), 0, 1);
-      const lastDayYear = new Date(now.getFullYear(), 11, 31);
 
       expect(query).toHaveProperty("created_at");
       expect(query.created_at).toStrictEqual(
-        BetweenDate(firstDayYear, lastDayYear)
+        Between(startOfYear(now), endOfYear(now))
       );
     });
 
-    it("should return an empty query for all time", () => {
+    it("should return a date from", () => {
       const query = microAnalyticsService._getPeriodQuery("all");
 
-      expect(query).toStrictEqual({});
+      expect(query).toStrictEqual({
+        created_at: Not(null),
+      });
     });
   });
 
@@ -122,6 +125,7 @@ describe("MicroAnalyticsService", () => {
           id: "prod_01HCCTCZ3NVYWN9Z07W38N94ED",
           variant_id: "variant_01HCCTCZ53KJG8RWN9K3J6NZYC",
           title: "Winter Jacket",
+          thumbnail: null,
           quantity: 1,
         },
       });

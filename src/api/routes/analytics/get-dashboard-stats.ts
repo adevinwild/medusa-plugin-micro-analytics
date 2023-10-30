@@ -6,19 +6,18 @@ import MicroAnalyticsService, {
 import { validator } from "../../../utils/validator";
 
 export default async (req: Request, res: Response) => {
-  console.log("v2");
-  const microAnalyticsService: MicroAnalyticsService = req.scope.resolve(
-    "microAnalyticsService"
-  );
-
   try {
+    const microAnalyticsService: MicroAnalyticsService = req.scope.resolve(
+      "microAnalyticsService"
+    );
+
     const validated = await validator(GetDashboardStatsValidator, req.query);
-    console.log(validated.period);
 
     const result = await microAnalyticsService.getDashboardStats({
       period: validated.period,
     });
-    res.json(result);
+
+    res.status(200).json(result);
   } catch (error) {
     if (error instanceof Error) {
       res.status(400).json({
